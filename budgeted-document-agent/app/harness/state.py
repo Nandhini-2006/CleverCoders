@@ -19,6 +19,7 @@ class AgentState(dict):
         remaining_budget: int = 6,
         tool_trace: Optional[List[Dict[str, Any]]] = None,
         status: str = "running",
+        final_answer: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(
             question=question,
@@ -32,6 +33,7 @@ class AgentState(dict):
             remaining_budget=remaining_budget,
             tool_trace=tool_trace or [],
             status=status,
+            final_answer=final_answer or {},
         )
 
     # Property accessors
@@ -78,3 +80,8 @@ class AgentState(dict):
     @property
     def status(self) -> str:
         return self["status"]
+
+    @property
+    def final_answer(self) -> Dict[str, Any]:
+        return self.get("final_answer", {})
+

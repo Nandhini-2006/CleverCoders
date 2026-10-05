@@ -4,10 +4,13 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from app.config import MAX_TOOL_CALLS
 from app.harness.budget import BudgetController, BudgetExhaustedError
 from app.harness.state import AgentState
+from app.harness.logger import log_query_trace
 from app.agent.planner import plan_query
 from app.agent.evidence import process_evidence
+from app.agent.answer import generate_final_answer
 from app.tools.search_keyword import search_keyword
 from app.tools.get_page import get_page
+
 
 
 def compute_entropy(candidate_pages: List[Dict[str, Any]]) -> float:
@@ -44,6 +47,8 @@ class DocumentAgent:
         get_page_fn: Optional[Callable[[str, int], Any]] = None,
         planner_fn: Optional[Callable[[str], Dict[str, Any]]] = None,
         evidence_fn: Optional[Callable[..., Dict[str, Any]]] = None,
+        answer_fn: Optional[Callable[..., Dict[str, Any]]] = None,
+        llm_client: Optional[Any] = None,
     ):
         self.max_budget = max_budget
         self.tau = tau
@@ -51,8 +56,16 @@ class DocumentAgent:
         self.get_page_fn = get_page_fn or get_page
         self.planner_fn = planner_fn or plan_query
         self.evidence_fn = evidence_fn or process_evidence
+        self.answer_fn = answer_fn or generate_final_answer
+        self.llm_client = llm_client
 
-    def run(self, doc_id: str, question: str) -> AgentState:
+    def run(
+        self,
+        doc_id: str,
+        question: str,
+        generate_answer: bool = False,
+        log_trace: bool = True,
+    ) -> AgentState:
         """
         Run the budgeted agent loop to collect evidence for a user question.
 
@@ -60,6 +73,7 @@ class DocumentAgent:
         """
         if not question or not question.strip():
             raise ValueError("Question cannot be empty.")
+
 
         # 1. Initialize Budget Controller & State
         budget = BudgetController(max_calls=self.max_budget)
@@ -88,24 +102,50 @@ class DocumentAgent:
 
         # 3. Iterative Information-Gain Agent Loop
         while budget.remaining_calls() > 0:
-            # Check stopping condition: sufficient confidence and no unresolved contradictions
+            # Check stopping condition: sufficient confidence, no unresolved contradictions,
+            # all plan keywords covered, and no unretrieved candidate pages in small candidate pools (<=3)
+            unretrieved_candidates = [
+                p_num for p_num in candidate_map if p_num not in retrieved_page_numbers
+            ]
+            candidates_checked = False if (unretrieved_candidates and len(candidate_map) <= 3) else True
+
+            all_kws_covered = all(
+                kw in searched_keywords or any(kw.lower() in p.get("text", "").lower() for p in state["retrieved_pages"])
+                for kw in keywords
+            )
+
+            coverage = state["evidence"].get("answer_coverage", {})
+            coverage_complete = coverage.get("is_complete", True)
+
             if (
                 state["confidence"] >= self.tau
                 and state["evidence"]
                 and not state["evidence"].get("unresolved_contradictions")
+                and all_kws_covered
+                and candidates_checked
+                and coverage_complete
             ):
                 state["status"] = "completed"
                 break
 
+
+
             # --- Action Generation & Expected Information Gain Scoring ---
             candidate_actions: List[Tuple[str, Any, float]] = []
 
-            # Option A: Search keyword action (if not searched yet)
+            # Option A1: Search keyword action (if not searched yet)
             for kw in keywords:
                 if kw not in searched_keywords:
                     # High expected value if no candidates yet, or moderate if adding coverage
                     expected_ig = 1.0 if not candidate_map else 0.65
                     candidate_actions.append(("search_keyword", kw, expected_ig))
+
+            # Option A2: Search missing components from coverage analysis if budget remains
+            missing_components = coverage.get("missing_components", [])
+            for mc in missing_components:
+                clean_mc = mc.strip()
+                if clean_mc and clean_mc not in searched_keywords and clean_mc.lower() not in [k.lower() for k in searched_keywords]:
+                    candidate_actions.append(("search_keyword", clean_mc, 0.85))
 
             # Option B: Get page action (if discovered and not retrieved yet)
             for page_num, cand in candidate_map.items():
@@ -260,6 +300,46 @@ class DocumentAgent:
         else:
             state["status"] = "insufficient_information"
 
+        # --- Phase 7: Final Answer Generation & Validation (if enabled) ---
+        if generate_answer:
+            final_ans = self.answer_fn(
+                question=question.strip(),
+                evidence_state=state["evidence"],
+                retrieved_pages=state["retrieved_pages"],
+                confidence=state["confidence"],
+                contradictions=state["evidence"].get("contradictions", []),
+                unresolved_contradictions=state["evidence"].get("unresolved_contradictions", []),
+                agent_state=state,
+                llm_client=self.llm_client,
+            )
+            state["final_answer"] = final_ans
+
+        # --- JSONL Logging (Developer Trace) ---
+        if log_trace:
+            final_ans_dict = state.get("final_answer", {})
+            trace_record = {
+                "question": question.strip(),
+                "question_type": plan.get("question_type", "factual"),
+                "keywords": plan.get("keywords", []),
+                "selected_pages": [p.get("page_number", p.get("page")) for p in state["retrieved_pages"]],
+                "tool_calls": state["tool_trace"],
+                "tool_inputs": [t.get("input") for t in state["tool_trace"]],
+                "tool_result_summaries": [t.get("result_summary") for t in state["tool_trace"]],
+                "entropy": state["entropy"],
+                "information_gain": round(sum(t.get("information_gain", 0.0) for t in state["tool_trace"]), 4),
+                "budget_before": self.max_budget,
+                "budget_after": state["remaining_budget"],
+                "evidence": state["evidence"],
+                "contradiction_state": state["evidence"].get("contradictions", []),
+                "confidence": state["confidence"],
+                "groundedness": final_ans_dict.get("groundedness", 0.0),
+                "final_status": final_ans_dict.get("status", state["status"]),
+            }
+            try:
+                log_query_trace(trace_record)
+            except Exception:
+                pass
+
         return state
 
 
@@ -272,6 +352,8 @@ def run_agent(
     get_page_fn: Optional[Callable[[str, int], Any]] = None,
     planner_fn: Optional[Callable[[str], Dict[str, Any]]] = None,
     evidence_fn: Optional[Callable[..., Dict[str, Any]]] = None,
+    answer_fn: Optional[Callable[..., Dict[str, Any]]] = None,
+    llm_client: Optional[Any] = None,
 ) -> AgentState:
     """
     Functional interface to run the DocumentAgent loop.
@@ -283,5 +365,40 @@ def run_agent(
         get_page_fn=get_page_fn,
         planner_fn=planner_fn,
         evidence_fn=evidence_fn,
+        answer_fn=answer_fn,
+        llm_client=llm_client,
     )
-    return agent.run(doc_id=doc_id, question=question)
+    return agent.run(doc_id=doc_id, question=question, generate_answer=False)
+
+
+def run_pipeline(
+    doc_id: str,
+    question: str,
+    max_budget: int = MAX_TOOL_CALLS,
+    tau: float = 0.7,
+    search_fn: Optional[Callable[[str, str], List[Dict[str, Any]]]] = None,
+    get_page_fn: Optional[Callable[[str, int], Any]] = None,
+    planner_fn: Optional[Callable[[str], Dict[str, Any]]] = None,
+    evidence_fn: Optional[Callable[..., Dict[str, Any]]] = None,
+    answer_fn: Optional[Callable[..., Dict[str, Any]]] = None,
+    llm_client: Optional[Any] = None,
+    log_trace: bool = True,
+) -> AgentState:
+    """
+    End-to-end pipeline function executing all phases:
+    Phase 3 Planning -> Phase 4 Action Selection -> Tool Execution ->
+    Phase 5 Evidence -> Phase 6 Budget Control ->
+    Phase 7 Answer Generation & Validation -> JSONL Logging.
+    """
+    agent = DocumentAgent(
+        max_budget=max_budget,
+        tau=tau,
+        search_fn=search_fn,
+        get_page_fn=get_page_fn,
+        planner_fn=planner_fn,
+        evidence_fn=evidence_fn,
+        answer_fn=answer_fn,
+        llm_client=llm_client,
+    )
+    return agent.run(doc_id=doc_id, question=question, generate_answer=True, log_trace=log_trace)
+

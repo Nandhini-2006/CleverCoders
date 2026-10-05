@@ -104,6 +104,19 @@ def detect_topic_and_value(text: str) -> Tuple[Optional[str], Optional[str]]:
                 return topic_key, tech
         return f"{subject}_mechanism", tech
 
+    # 5. Generic predicate assertion (e.g., "Project deadline is set to October 15, 2026")
+    generic_assert = re.search(
+        r"^(?:the\s+)?([A-Za-z0-9_\s]{3,30}?)\s+(?:is\s+set\s+to|is\s+scheduled\s+for|is|was|are|were|set\s+to|deadline\s+is)\s+(.+)$",
+        text_clean,
+        re.IGNORECASE,
+    )
+    if generic_assert:
+        subj = generic_assert.group(1).strip().lower()
+        val = generic_assert.group(2).strip().rstrip(".").lower()
+        words = subj.split()
+        if len(words) <= 4 and words[0] not in ["it", "this", "that", "there", "what", "which", "who", "how"]:
+            return subj, val
+
     return None, None
 
 
@@ -276,20 +289,46 @@ class EvidenceManager:
             })
 
         # 5. Compute Confidence Formulation: Conf = w1*E + w2*V + w3*S - w4*X
+        # Keyword alignment with query plan
+        keywords = query_plan.get("keywords", []) if query_plan else []
+        if keywords and claims_list:
+            matched_kws = sum(
+                1 for kw in keywords
+                if any(kw.lower() in cl["claim"].lower() for cl in claims_list)
+            )
+            kw_ratio = matched_kws / len(keywords)
+        else:
+            kw_ratio = 0.5 if not keywords else 0.0
+
         # E: Evidence support strength [0, 1]
         if not claims_list:
             E = 0.0
         else:
-            E = min(1.0, 0.4 + 0.3 * len(claims_list))
+            base_e = 0.4 + 0.3 * len(claims_list)
+            if query_plan and kw_ratio > 0:
+                base_e += 0.3 * kw_ratio
+            E = min(1.0, base_e)
 
         # V: Verification / agreement strength [0, 1]
         multi_page_count = sum(1 for c in claims_list if len(c.get("supporting_pages", [])) > 1)
-        V = (multi_page_count / len(claims_list)) if claims_list else 0.0
+        if len(pages) > 1:
+            base_v = (multi_page_count / len(claims_list)) if claims_list else 0.0
+            if not unresolved_list and kw_ratio >= 0.5:
+                base_v = max(base_v, 0.5 * kw_ratio)
+            V = min(1.0, base_v)
+        else:
+            # Single authoritative page without contradictions
+            if query_plan:
+                V = 0.6 * kw_ratio
+            else:
+                V = 0.4
 
         # S: Source relevance strength [0, 1]
         relevance_vals = [float(p.get("relevance", 1.0)) for p in pages]
         avg_rel = sum(relevance_vals) / len(relevance_vals) if relevance_vals else 1.0
-        S = min(1.0, max(0.0, avg_rel if avg_rel <= 1.0 else (avg_rel / 3.0)))
+        S = min(1.0, max(0.0, avg_rel))
+
+
 
         # X: Contradiction penalty [0, 1]
         if unresolved_list:
@@ -310,6 +349,14 @@ class EvidenceManager:
         else:
             status = "insufficient_information"
 
+        # 6. Compute Answer Coverage across requested entities/concepts
+        from app.agent.validator import compute_answer_coverage
+        coverage_data = compute_answer_coverage(
+            question=query_plan.get("question", "") if (query_plan and isinstance(query_plan, dict)) else "",
+            evidence=pages,
+            query_plan=query_plan
+        )
+
         return {
             "claims": claims_list,
             "contradictions": contradictions_list,
@@ -317,6 +364,7 @@ class EvidenceManager:
             "confidence": confidence,
             "status": status,
             "evidence_strength": evidence_strength,
+            "answer_coverage": coverage_data,
         }
 
 
