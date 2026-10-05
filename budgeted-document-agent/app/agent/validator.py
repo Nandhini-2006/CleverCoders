@@ -62,7 +62,7 @@ DEFAULT_PLANNER_STOPWORDS: Set[str] = {
     "above", "below", "up", "down", "out", "off", "over", "under", "again",
     "further", "then", "once", "such", "no", "not", "only", "own", "same",
     "so", "than", "too", "very", "just", "work", "between", "against","explain",
-    "does","do","does","do"
+    "does","do","does","do","explain"
 }
 
 DEFAULT_GENERIC_WORDS: Set[str] = {
@@ -841,7 +841,7 @@ STOP_WORDS = {
     "about", "against", "between", "into", "through", "during", "before",
     "after", "above", "below", "to", "from", "up", "down", "is", "are", "was",
     "were", "be", "been", "being", "have", "has", "had", "do", "does", "did",
-    "that", "this", "these", "those", "it", "its", "as", "of"
+    "that", "this", "these", "those", "it", "its", "as", "of","explain"
 }
 
 
@@ -856,7 +856,7 @@ COMMON_PREDICATE_VERBS: Set[str] = {
     "run", "runs", "running", "ran", "executes", "executed", "stores", "stored",
     "supports", "supported", "contains", "contained", "occurs", "occurred",
     "generates", "generated", "produces", "produced", "manages", "managed",
-    "starts", "started", "stops", "stopped", "moves", "moved", "collides"
+    "starts", "started", "stops", "ed", "moves", "moved", "collides"
 }
 
 HEADING_NUMBER_PATTERN = re.compile(
