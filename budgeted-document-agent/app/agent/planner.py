@@ -202,6 +202,75 @@ class NvidiaNemotronClient(BaseLLMClient):
             msg = str(exc).lower()
             return any(phrase in msg for phrase in _EMPTY_OUTPUT_PHRASES)
 
+        def _strip_thinking_preamble(text: str) -> str:
+            """
+            Remove chain-of-thought / thinking preamble that Nemotron leaks
+            into the visible content when enable_thinking=True.
+
+            Handles patterns like:
+              - <think>...</think>
+              - Here's a thinking process: ...
+              - 1. Analyze User Question: ...  (numbered reasoning)
+              - **Thinking:** ...
+            """
+            import re as _re
+
+            # 1. Strip XML-style thinking tags (the standard Nemotron pattern)
+            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL | _re.IGNORECASE).strip()
+
+            # 2. Strip "Here's a thinking process:" preamble up to first blank line
+            #    or until a line that looks like the actual answer begins
+            thinking_header = _re.compile(
+                r"^(?:here(?:'s| is)(?: a| my)? (?:thinking|thought|reasoning) (?:process|steps?)?[:\s]*|"
+                r"\*\*(?:thinking|reasoning|thought process)\*\*[:\s]*|"
+                r"let me (?:think|reason|analyze)[:\s]*)",
+                _re.IGNORECASE,
+            )
+
+            lines = text.splitlines()
+            if lines and thinking_header.match(lines[0].strip()):
+                # Skip preamble block: drop lines until we hit real answer prose.
+                # Real answer prose: non-empty, not a numbered step, not a bullet,
+                # long enough to be a sentence (>=30 chars), or starts with JSON {
+                cutoff = 1
+                for i, line in enumerate(lines[1:], start=1):
+                    stripped = line.strip()
+                    if not stripped:
+                        cutoff = i + 1
+                        continue
+                    # Still preamble: numbered step "1. ..."
+                    if _re.match(r"^\d+\.\s+", stripped):
+                        cutoff = i + 1
+                        continue
+                    # Still preamble: bullet "- ..." or "* ..."
+                    if stripped[:2] in ("- ", "* ", "• "):
+                        cutoff = i + 1
+                        continue
+                    # Real answer starts: JSON object or long prose sentence
+                    if stripped.startswith("{") or len(stripped) >= 30:
+                        cutoff = i
+                        break
+
+                text = "\n".join(lines[cutoff:]).strip()
+
+            # 3. Strip any remaining leading numbered/bulleted preamble lines
+            #    (e.g. "1. **Analyze User Question:**\n...")
+            cleaned_lines = []
+            in_preamble = True
+            for line in text.splitlines():
+                stripped = line.strip()
+                if in_preamble and (
+                    _re.match(r"^\d+\.\s+\*\*", stripped)
+                    or _re.match(r"^[-*•]\s+\*\*", stripped)
+                    or not stripped
+                ):
+                    continue
+                in_preamble = False
+                cleaned_lines.append(line)
+            text = "\n".join(cleaned_lines).strip()
+
+            return text
+
         def _call_without_extra_body() -> str:
             """Fallback call without thinking/extra_body params."""
             try:
@@ -213,10 +282,10 @@ class NvidiaNemotronClient(BaseLLMClient):
                     max_tokens=self.max_tokens,
                     stream=False,
                 )
-                return (resp.choices[0].message.content or "").strip()
+                raw = (resp.choices[0].message.content or "").strip()
+                return _strip_thinking_preamble(raw)
             except Exception as inner_e:
                 if _is_empty_output_error(inner_e):
-                    # Model returned empty — signal caller to use deterministic fallback
                     return ""
                 raise
 
@@ -230,12 +299,11 @@ class NvidiaNemotronClient(BaseLLMClient):
                 stream=False,
                 extra_body=extra_body,
             )
-            content = (response.choices[0].message.content or "").strip()
-            return content
+            raw = (response.choices[0].message.content or "").strip()
+            return _strip_thinking_preamble(raw)
         except Exception as e:
             err_msg = str(e).lower()
             if _is_empty_output_error(e):
-                # Model produced empty output — return empty so fallback triggers
                 return ""
             if any(kw in err_msg for kw in ("extra_body", "chat_template_kwargs", "reasoning_budget")):
                 return _call_without_extra_body()
@@ -424,7 +492,7 @@ class QueryPlanner:
             fallback = build_fallback_retrieval_plan(question)
             return QueryPlan(
                 question_type="other",
-                keywords=fallback.get("keywords", []),
+                keywords=[],
                 search_query=question.strip(),
                 query=question.strip(),
                 synonyms=[],

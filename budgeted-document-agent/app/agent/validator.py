@@ -61,7 +61,8 @@ DEFAULT_PLANNER_STOPWORDS: Set[str] = {
     "had", "by", "as", "about", "into", "through", "during", "before", "after",
     "above", "below", "up", "down", "out", "off", "over", "under", "again",
     "further", "then", "once", "such", "no", "not", "only", "own", "same",
-    "so", "than", "too", "very", "just", "work", "between", "against"
+    "so", "than", "too", "very", "just", "work", "between", "against","explain",
+    "does","do","does","do"
 }
 
 DEFAULT_GENERIC_WORDS: Set[str] = {
