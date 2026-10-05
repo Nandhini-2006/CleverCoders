@@ -3,6 +3,7 @@ from app.agent.validator import validate_query_plan, PlanValidationError, ALLOWE
 from app.agent.planner import QueryPlanner, QueryPlan, BaseLLMClient, MockLLMClient, plan_query
 from app.agent.retriever import PageRetriever, retrieve_pages
 from app.agent.evidence import EvidenceManager, process_evidence
+from app.agent.agent import DocumentAgent, run_agent
 
 __all__ = [
     "build_planner_prompt",
@@ -19,4 +20,6 @@ __all__ = [
     "retrieve_pages",
     "EvidenceManager",
     "process_evidence",
+    "DocumentAgent",
+    "run_agent",
 ]

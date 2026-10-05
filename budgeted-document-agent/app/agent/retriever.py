@@ -174,7 +174,7 @@ class PageRetriever:
             "query_plan": query_plan,
             "candidate_pages": candidate_pages,
             "retrieved_pages": retrieved_pages,
-            "tool_calls_used": budget.calls_used,
+            "tool_calls_used": int(budget.calls_used),
             "entropy": entropy,
         }
 
