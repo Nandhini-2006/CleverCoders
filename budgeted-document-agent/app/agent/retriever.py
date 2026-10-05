@@ -86,17 +86,24 @@ class PageRetriever:
                 if not isinstance(page_num, int) or page_num <= 0:
                     continue
 
+                match_count = match.get("match_count", 1) if isinstance(match, dict) else 1
+
                 if page_num not in candidate_map:
                     candidate_map[page_num] = {
                         "page_number": page_num,
                         "matched_keywords": [kw],
                         "score": 1,
+                        "k_score": 1,
+                        "h_score": 0,
+                        "c_score": int(match_count),
                     }
                 else:
+                    candidate_map[page_num]["c_score"] += int(match_count)
                     # Deduplicate keywords for this page and update score
                     if kw not in candidate_map[page_num]["matched_keywords"]:
                         candidate_map[page_num]["matched_keywords"].append(kw)
                         candidate_map[page_num]["score"] += 1
+                        candidate_map[page_num]["k_score"] += 1
 
         # -------------------------------------------------------------
         # STEP 2: Candidate Relevance R(p,q), Probability P(p|q), and Entropy
@@ -110,6 +117,12 @@ class PageRetriever:
             c["probability"] = (
                 round(c["score"] / total_relevance, 4) if total_relevance > 0 else 0.0
             )
+            # Mathematical notation aliases
+            c["K(p,q)"] = c.get("k_score", len(c.get("matched_keywords", [])))
+            c["H(p,q)"] = c.get("h_score", 0)
+            c["C(p,q)"] = c.get("c_score", len(c.get("matched_keywords", [])))
+            c["R(p,q)"] = c["score"]
+            c["P(page|query)"] = c["probability"]
 
         # Shannon Entropy H(P) = -sum(P(p|q) * log2(P(p|q)))
         if total_relevance > 0 and len(candidate_pages) > 0:
