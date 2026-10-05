@@ -35,7 +35,8 @@ def get_document_path(doc_id: str) -> Path:
     Return the PDF path corresponding to a document ID.
     """
     # Prevent path traversal: ensure ID matches expected pattern
-    if not doc_id.startswith("doc_") or not doc_id.replace("doc_", "").isalnum():
+    id_body = doc_id.replace("doc_", "").replace("_", "")
+    if not doc_id.startswith("doc_") or not id_body.isalnum():
         raise ValueError("Invalid document ID")
 
     file_path = (DOCUMENT_DIR / f"{doc_id}.pdf").resolve()
