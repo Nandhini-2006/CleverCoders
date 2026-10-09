@@ -1,4 +1,4 @@
-# Budgeted Agentic Document Answering System
+#Agentic Document Answering System
 
 An agentic document question-answering system that provides **grounded, evidence-based answers from PDF documents** using controlled document tools, information-gain-based action selection, and a strict execution budget.
 
